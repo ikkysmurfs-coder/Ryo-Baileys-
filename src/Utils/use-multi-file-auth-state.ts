@@ -1,5 +1,5 @@
 import { Mutex } from 'async-mutex'
-import { mkdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises'
+import { copyFile, mkdir, readFile, rename, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { proto } from '../../WAProto/index.js'
 import type { AuthenticationCreds, AuthenticationState, SignalDataTypeMap } from '../Types'
@@ -41,8 +41,16 @@ export const useMultiFileAuthState = async (
 		return mutex.acquire().then(async release => {
 			try {
 				const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
+			const backupPath = `${filePath}.bak`
 			try {
 				await writeFile(tempPath, JSON.stringify(data, BufferJSON.replacer))
+				try {
+					await copyFile(filePath, backupPath)
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+						throw error
+					}
+				}
 				await rename(tempPath, filePath)
 			} catch (error) {
 				await unlink(tempPath).catch(() => {})
@@ -61,8 +69,18 @@ export const useMultiFileAuthState = async (
 
 			return await mutex.acquire().then(async release => {
 				try {
-					const data = await readFile(filePath, { encoding: 'utf-8' })
-					return JSON.parse(data, BufferJSON.reviver)
+					try {
+						const data = await readFile(filePath, { encoding: 'utf-8' })
+						return JSON.parse(data, BufferJSON.reviver)
+					} catch (primaryError) {
+						const backupPath = `${filePath}.bak`
+						try {
+							const backup = await readFile(backupPath, { encoding: 'utf-8' })
+							return JSON.parse(backup, BufferJSON.reviver)
+						} catch {
+							throw primaryError
+						}
+					}
 				} finally {
 					release()
 				}
